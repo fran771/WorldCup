@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="pt-BR">
 <head>
@@ -13,6 +12,8 @@ button,input,select{font:inherit}
 button{cursor:pointer;background:#203d5e;color:var(--text);border:1px solid #426080;border-radius:8px;padding:9px 12px}
 button:hover{filter:brightness(1.15)}
 button:disabled{cursor:default;opacity:.65}
+.file-picker{display:inline-flex;flex-direction:column;gap:7px;background:#203d5e;color:var(--text);border:1px solid #426080;border-radius:8px;padding:9px 12px;font:inherit;cursor:pointer;max-width:100%}
+.file-picker input[type=file]{display:block;max-width:100%;width:100%;color:var(--text);font-size:12px}
 header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:14px clamp(12px,3vw,30px);background:#071321;border-bottom:1px solid var(--line)}
 .logo{font-weight:900;letter-spacing:2px;font-size:20px}.logo span{color:var(--green)}
 nav{display:flex;gap:7px;flex-wrap:wrap}
@@ -90,16 +91,22 @@ select,input[type=text]{background:#08192c;color:white;border:1px solid #426080;
           </select>
         </div>
         <div class="field"><label for="qualify">Classificados por grupo</label>
-          <select id="qualify" onchange="renderGroups()">
+          <select id="qualify" onchange="changeQualify()">
             <option value="1">1 seleção</option><option value="2" selected>2 seleções</option><option value="3">3 seleções</option><option value="4">4 seleções</option>
           </select>
         </div>
       </div>
       <p class="status" id="groupInfo"></p>
       <div class="row">
+        <button onclick="saveGame(true)">💾 Salvar em arquivo</button>
+        <label class="file-picker">📂 Selecionar arquivo de campeonato
+          <input id="saveFileInput" type="file" accept=".json,application/json,.fsswc" onchange="importSaveFile(event)">
+        </label>
         <button onclick="resetNames()">Restaurar nomes</button>
         <button class="primary" onclick="createBracket()">Montar árvore do mata-mata →</button>
       </div>
+      <p class="muted" id="saveStatus">Use “Salvar em arquivo” e depois toque no link de download que aparecerá abaixo.</p>
+      <div id="saveDownloadArea" class="hidden" style="margin-top:10px;padding:12px;border:1px solid #16c784;border-radius:10px;background:#092b2b;overflow-wrap:anywhere"></div>
     </div>
     <div class="card">
       <h2>Seleções por grupo</h2>
@@ -144,14 +151,15 @@ function showPage(p){
   if(p==='checkers'&&!checkersStarted)newCheckers();
   window.scrollTo({top:0,behavior:'smooth'});
 }
+function changeQualify(){renderGroups();persistGame()}
 function changeCount(){
   const old=names.slice();
   names=Array.from({length:total()},(_,i)=>old[i]||defaults[i]||`Seleção ${i+1}`);
-  qualified={};renderGroups();
+  qualified={};rounds=[];renderGroups();persistGame();
 }
 function resetNames(){
   names=Array.from({length:total()},(_,i)=>defaults[i]||`Seleção ${i+1}`);
-  qualified={};renderGroups();
+  qualified={};rounds=[];renderGroups();persistGame();
 }
 function getGroups(){
   return Array.from({length:groupCount()},(_,g)=>names.slice(g*4,g*4+4));
@@ -172,12 +180,13 @@ function renderGroups(){
           if(selected.length>=perGroup()){cb.checked=false;alert(`Você pode classificar no máximo ${perGroup()} por grupo.`);return}
           qualified[team]=true;
         }else delete qualified[team];
+        persistGame();
       });
       const inp=document.createElement('input');inp.type='text';inp.value=team;
       inp.addEventListener('change',()=>{
         const idx=names.indexOf(team),v=inp.value.trim()||team;
         if(v!==team&&names.includes(v)){alert('Já existe uma seleção com esse nome.');inp.value=team;return}
-        if(idx>=0){if(qualified[team])qualified[v]=true;delete qualified[team];names[idx]=v;renderGroups()}
+        if(idx>=0){if(qualified[team])qualified[v]=true;delete qualified[team];names[idx]=v;renderGroups();persistGame()}
       });
       row.append(cb,inp);box.append(row);
     });
@@ -189,6 +198,7 @@ function createBracket(){
   getGroups().forEach(teams=>teams.forEach(t=>{if(qualified[t])picked.push(t)}));
   if(picked.length<2){alert('Marque pelo menos duas seleções classificadas.');return}
   if(picked.length>32){alert('Máximo de 32 seleções.');return}
+  // Distribui os classificados mantendo a ordem dos grupos.
   let size=1;while(size<picked.length)size*=2;
   const entrants=picked.slice();
   while(entrants.length<size)entrants.push('BYE');
@@ -199,6 +209,7 @@ function createBracket(){
     const prev=rounds.at(-1);
     rounds.push(Array.from({length:prev.length/2},()=>({a:'',b:'',winner:''})));
   }
+  // BYEs avançam sem clique.
   for(let r=0;r<rounds.length-1;r++){
     rounds[r].forEach(m=>{
       if(m.a==='BYE'&&m.b!=='BYE')m.winner=m.b;
@@ -207,7 +218,7 @@ function createBracket(){
     });
     propagate(r);
   }
-  renderBracket();showPage('bracket');
+  renderBracket();persistGame();showPage('bracket');
 }
 function propagate(r){
   const next=rounds[r+1];if(!next)return;
@@ -226,7 +237,7 @@ function chooseWinner(r,i,team){
     rounds[rr].forEach(x=>{x.a='';x.b='';x.winner=''});
     propagate(rr-1);
   }
-  renderBracket();
+  renderBracket();persistGame();
 }
 function roundName(n){
   if(n===1)return 'FINAL';
@@ -281,7 +292,115 @@ function renderBracket(){
     const n=document.createElement('h1');n.textContent=final.winner;champ.append(h,n);root.append(champ);
   }
 }
+const SAVE_KEY='fss_world_cup_save_v1';
+function gameData(){
+  return {
+    version:1,
+    teamCount:total(),
+    qualify:perGroup(),
+    names:names.slice(),
+    qualified:{...qualified},
+    rounds:rounds.map(round=>round.map(m=>({a:m.a,b:m.b,winner:m.winner})))
+  };
+}
+function persistGame(){
+  try{
+    localStorage.setItem(SAVE_KEY,JSON.stringify(gameData()));
+    const status=$('saveStatus');if(status)status.textContent='Salvamento automático ativo • último salvamento: '+new Date().toLocaleTimeString('pt-BR');
+    return true;
+  }catch(err){
+    const status=$('saveStatus');if(status)status.textContent='Não foi possível salvar neste navegador. Use um navegador com armazenamento habilitado.';
+    return false;
+  }
+}
+function saveGame(showMessage=false){
+  try{
+    const data=gameData();
+    const content=JSON.stringify(data,null,2);
+    const blob=new Blob([content],{type:'application/json;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+    const filename='fss-world-cup-'+stamp+'.json';
+    const area=$('saveDownloadArea');
+    area.innerHTML='';
+    area.classList.remove('hidden');
+    const info=document.createElement('p');
+    info.textContent='Arquivo pronto! Toque no link abaixo para baixar e escolha onde guardar:';
+    info.style.margin='0 0 10px';
+    const link=document.createElement('a');
+    link.href=url;link.download=filename;link.textContent='⬇️ Baixar '+filename;
+    link.style.cssText='display:inline-block;padding:12px 16px;background:#087f5b;color:white;font-weight:800;border-radius:8px;text-decoration:none;';
+    area.append(info,link);
+    persistGame();
+    const status=$('saveStatus');
+    if(status)status.textContent='O arquivo foi preparado. Toque no botão verde “Baixar” abaixo para salvar fisicamente.';
+    // Tenta iniciar o download automaticamente; o link visível fica disponível se o navegador bloquear o clique automático.
+    const autoLink=document.createElement('a');
+    autoLink.href=url;autoLink.download=filename;autoLink.style.display='none';
+    document.body.appendChild(autoLink);
+    try{autoLink.click()}catch(e){}
+    autoLink.remove();
+    // Mantém o URL válido por bastante tempo para permitir o toque manual no link visível.
+    setTimeout(()=>{URL.revokeObjectURL(url);if(link.isConnected){link.removeAttribute('href');link.textContent='Link expirado — toque em Salvar em arquivo novamente.'}},120000);
+    return true;
+  }catch(err){
+    const status=$('saveStatus');if(status)status.textContent='Erro ao preparar o arquivo: '+(err&&err.message?err.message:'falha desconhecida');
+    if(showMessage)alert('Não consegui preparar o arquivo. Tente abrir o HTML no Chrome normal, fora da prévia do editor.');
+    return false;
+  }
+}
+function loadGame(showMessage=true){
+  const picker=$('saveFileInput');
+  if(!picker){if(showMessage)alert('Seletor de arquivo não encontrado.');return false;}
+  picker.value='';picker.click();
+  return true;
+}
+async function importSaveFile(event){
+  const file=event.target.files&&event.target.files[0];
+  if(!file)return;
+  try{
+    const raw=await file.text();
+    const data=JSON.parse(raw);
+    if(!data||!Array.isArray(data.names)||!data.qualified||!Array.isArray(data.rounds))throw new Error('Arquivo de salvamento inválido');
+    const count=[4,8,16,24,32].includes(Number(data.teamCount))?Number(data.teamCount):data.names.length;
+    if(![4,8,16,24,32].includes(count)||data.names.length<count)throw new Error('Quantidade de seleções inválida');
+    $('teamCount').value=String(count);
+    $('qualify').value=String([1,2,3,4].includes(Number(data.qualify))?Number(data.qualify):2);
+    names=Array.from({length:count},(_,i)=>String(data.names[i]??defaults[i]??`Seleção ${i+1}`));
+    qualified={};
+    names.forEach(n=>{if(data.qualified[n])qualified[n]=true;});
+    rounds=data.rounds.map(round=>round.map(m=>({a:String(m.a??''),b:String(m.b??''),winner:String(m.winner??'')})));
+    renderGroups();renderBracket();persistGame();
+    const status=$('saveStatus');if(status)status.textContent='Arquivo carregado: '+file.name;
+    alert('Campeonato carregado do arquivo! Grupos, seleções classificadas e mata-mata restaurados.');
+  }catch(err){
+    alert('Não foi possível carregar esse arquivo. Selecione um arquivo JSON exportado pelo FSS World Cup.');
+  }finally{event.target.value='';}
+}
+function loadLocalGame(showMessage=true){
+  try{
+    const raw=localStorage.getItem(SAVE_KEY);
+    if(!raw){if(showMessage)alert('Ainda não existe um campeonato salvo neste navegador.');return false;}
+    const data=JSON.parse(raw);
+    if(!data||!Array.isArray(data.names)||!data.qualified||!Array.isArray(data.rounds))throw new Error('Arquivo de salvamento inválido');
+    const count=[4,8,16,24,32].includes(Number(data.teamCount))?Number(data.teamCount):data.names.length;
+    $('teamCount').value=String(count);
+    $('qualify').value=String([1,2,3,4].includes(Number(data.qualify))?Number(data.qualify):2);
+    names=Array.from({length:count},(_,i)=>String(data.names[i]??defaults[i]??`Seleção ${i+1}`));
+    qualified={};
+    names.forEach(n=>{if(data.qualified[n])qualified[n]=true;});
+    rounds=data.rounds.map(round=>round.map(m=>({a:String(m.a??''),b:String(m.b??''),winner:String(m.winner??'')})));
+    renderGroups();renderBracket();
+    const status=$('saveStatus');if(status)status.textContent='Campeonato carregado com sucesso.';
+    if(showMessage)alert('Dados carregados! Grupos, nomes, classificados e mata-mata restaurados.');
+    return true;
+  }catch(err){
+    if(showMessage)alert('Não foi possível carregar o salvamento. Os dados podem estar corrompidos.');
+    return false;
+  }
+}
 renderGroups();
+loadLocalGame(false);
 
 // Jogo de damas local para dois jogadores
 let board=[],turn='w',selected=null,legalMoves=[],checkersStarted=false,gameOver=false;
